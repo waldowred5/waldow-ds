@@ -1,35 +1,78 @@
 /**
  * Builds the three token tiers into CSS variables and a typed JS module.
  *
- *   src/primitive     raw values (palette, scales)
- *   src/semantic      intent (base.json is theme-independent; light.json and dark.json are themes)
+ *   src/brand         the theme knobs: seed colours (primary, secondary, highlight), neutral scale,
+ *                     radius, font. Each seed becomes an 11-step scale via palette.ts.
+ *   src/primitive     raw values (status hues, scales)
+ *   src/semantic      intent (base.json is mode-independent; light.json and dark.json are modes)
  *   src/component     per-component decisions, referencing semantic tokens
  *
  * Output (dist/):
- *   tokens.css   :root (primitives + light + components), then dark overrides for
- *                [data-theme="dark"] and prefers-color-scheme: dark
+ *   tokens.css   :root (knobs + primitives + light + components), then dark overrides for
+ *                [data-theme="dark"] and prefers-color-scheme: dark. Every block is also
+ *                declared on [data-brand], so overriding a knob on any element re-derives
+ *                the tokens for that subtree.
  *   tokens.js    flat light-theme values for JS consumers, with tokens.d.ts
  *   tokens.json  nested light-theme values, for docs and tooling
  *
  * The build fails if a text/background pair in either theme drops below WCAG AA.
  */
+import { readFileSync } from 'node:fs'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import StyleDictionary from 'style-dictionary'
 import type { TransformedToken } from 'style-dictionary/types'
+import { wcagContrast } from 'culori'
+import { scale, toOklch } from './palette.ts'
+
+// CSS gets colours as oklch(), including the colours inside shadows. JS output keeps hex,
+// because tools that read it (Storybook's theming, for one) can't parse oklch().
+type ShadowLayer = { color: string } & Record<string, string>
+StyleDictionary.registerTransform({
+  name: 'color/oklch',
+  type: 'value',
+  filter: (token) => token.$type === 'color',
+  transform: (token) => toOklch(String(token.$value)),
+})
+StyleDictionary.registerTransform({
+  name: 'shadow/oklch',
+  type: 'value',
+  filter: (token) => token.$type === 'shadow',
+  transform: (token) => {
+    const layer = (l: ShadowLayer) => ({ ...l, color: toOklch(l.color) })
+    const value = token.$value as ShadowLayer | ShadowLayer[]
+    return Array.isArray(value) ? value.map(layer) : layer(value)
+  },
+})
+const cssTransforms = StyleDictionary.hooks.transformGroups.css!.flatMap((name) =>
+  name === 'color/css' ? ['color/oklch'] : name === 'shadow/css/shorthand' ? ['shadow/oklch', name] : [name],
+)
 
 const PREFIX = 'ds'
 const DIST = 'dist/'
-const shared = ['src/primitive/**/*.json', 'src/semantic/base.json', 'src/component/**/*.json']
+const BRAND = 'src/brand/waldow.json'
+const shared = [BRAND, 'src/primitive/**/*.json', 'src/semantic/base.json', 'src/component/**/*.json']
+
+// The brand's seed colours become color.primary.*, color.secondary.* and color.highlight.*.
+const seeds = JSON.parse(readFileSync(BRAND, 'utf8')).theme.color as Record<string, { $value: string }>
+const palette = {
+  color: Object.fromEntries(
+    ['primary', 'secondary', 'highlight'].map((role) => [
+      role,
+      Object.fromEntries(Object.entries(scale(seeds[role]!.$value)).map(([step, hex]) => [step, { $type: 'color', $value: hex }])),
+    ]),
+  ),
+}
 
 const light = new StyleDictionary({
+  tokens: palette,
   source: [...shared, 'src/semantic/light.json'],
   log: { verbosity: 'silent' },
   platforms: {
     css: {
-      transformGroup: 'css',
+      transforms: cssTransforms,
       prefix: PREFIX,
       buildPath: DIST,
-      files: [{ destination: 'light.css', format: 'css/variables', options: { outputReferences: true } }],
+      files: [{ destination: 'light.css', format: 'css/variables', options: { outputReferences: true, selector: ':root, [data-brand]' } }],
     },
     js: {
       transformGroup: 'js',
@@ -45,14 +88,15 @@ const light = new StyleDictionary({
 
 // Dark only re-declares the semantic colour tokens. Component tokens reference
 // semantic variables, so they follow the theme without being re-emitted.
-const isDark = (token: TransformedToken) => token.filePath.endsWith('semantic/dark.json')
+const isDark = (token: TransformedToken) => token.filePath?.endsWith('semantic/dark.json') ?? false
 
 const dark = new StyleDictionary({
+  tokens: palette,
   source: [...shared, 'src/semantic/dark.json'],
   log: { verbosity: 'silent' },
   platforms: {
     css: {
-      transformGroup: 'css',
+      transforms: cssTransforms,
       prefix: PREFIX,
       buildPath: DIST,
       files: [
@@ -60,7 +104,7 @@ const dark = new StyleDictionary({
           destination: 'dark-attr.css',
           format: 'css/variables',
           filter: isDark,
-          options: { outputReferences: true, selector: '[data-theme="dark"]' },
+          options: { outputReferences: true, selector: '[data-theme="dark"], [data-theme="dark"] [data-brand]' },
         },
         {
           destination: 'dark-media.css',
@@ -68,7 +112,7 @@ const dark = new StyleDictionary({
           filter: isDark,
           options: {
             outputReferences: true,
-            selector: ['@media (prefers-color-scheme: dark)', ':root:not([data-theme="light"])'],
+            selector: ['@media (prefers-color-scheme: dark)', ':root:not([data-theme="light"]), :root:not([data-theme="light"]) [data-brand]'],
           },
         },
       ],
@@ -102,6 +146,9 @@ const pairs: Array<[fg: string, bg: string, min: number]> = [
   ['color.action.primary.text', 'color.action.primary.default', 4.5],
   ['color.action.primary.text', 'color.action.primary.hover', 4.5],
   ['color.action.secondary.text', 'color.action.secondary.default', 4.5],
+  ['color.action.secondary.text', 'color.action.secondary.hover', 4.5],
+  ['color.emphasis.highlight.on-solid', 'color.emphasis.highlight.solid', 4.5],
+  ['color.emphasis.highlight.text', 'color.emphasis.highlight.background', 4.5],
   ['color.action.danger.text', 'color.action.danger.default', 4.5],
   ['color.status.success.text', 'color.status.success.background', 4.5],
   ['color.status.warning.text', 'color.status.warning.background', 4.5],
@@ -111,17 +158,7 @@ const pairs: Array<[fg: string, bg: string, min: number]> = [
   ['color.border.strong', 'color.background.default', 3],
 ]
 
-const luminance = (hex: string) => {
-  const [r, g, b] = [1, 3, 5].map((i) => {
-    const c = parseInt(hex.slice(i, i + 2), 16) / 255
-    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
-  }) as [number, number, number]
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b
-}
-const contrast = (a: string, b: string) => {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number]
-  return (hi + 0.05) / (lo + 0.05)
-}
+const contrast = (a: string, b: string) => wcagContrast(a, b)
 
 const failures: string[] = []
 for (const [name, sd] of [['light', light], ['dark', dark]] as const) {
