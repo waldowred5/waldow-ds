@@ -39,12 +39,16 @@ export function scale(seed: string): Scale {
   ) as Scale
 }
 
-const round = (n: number, places: number) => Number(n.toFixed(places))
+/** Six significant figures: far below a visible difference, without float noise like 100.00000000000003. */
+const sig = (n: number) => Number(n.toPrecision(6))
 
-/** Any CSS colour as a compact `oklch()` string, e.g. `oklch(50% 0.22 276.7)` or `oklch(17.7% 0.011 260.6 / 6%)`. */
+/**
+ * Any CSS colour as an `oklch()` string to six significant figures, e.g.
+ * `oklch(54.1082% 0.219336 276.752)` or `oklch(17.6746% 0.0114376 260.635 / 5.88235%)`.
+ */
 export function toOklch(colour: string): string {
   const c = oklch(colour)
   if (!c) throw new Error(`Not a colour: ${colour}`)
-  const alpha = c.alpha !== undefined && c.alpha < 1 ? ` / ${round(c.alpha * 100, 0)}%` : ''
-  return `oklch(${round(c.l * 100, 1)}% ${round(c.c ?? 0, 3)} ${round(c.h ?? 0, 1)}${alpha})`
+  const alpha = c.alpha !== undefined && c.alpha < 1 ? ` / ${sig(c.alpha * 100)}%` : ''
+  return `oklch(${sig(c.l * 100)}% ${sig(c.c ?? 0)} ${sig(c.h ?? 0)}${alpha})`
 }
