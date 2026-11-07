@@ -77,7 +77,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
         if: steps.decide.outputs.mode == 'run'
-      - run: pnpm --filter @waldow-ds/ui build-storybook --stats-json
+      - run: pnpm --filter @waldow-design/ui build-storybook --stats-json
         if: steps.decide.outputs.mode == 'run'
 
       - uses: chromaui/action@latest
